@@ -649,6 +649,14 @@ class InMemoryTicketHandler:
     ) -> str:
         self._counter += 1
         ticket_id = f"{self._prefix}-{self._counter:04d}"
+        if notification.is_cancelled:
+            initial_state = "CANCELLED"
+        elif notification.is_open:
+            initial_state = "OPEN"
+        elif notification.is_closed:
+            initial_state = "CLOSED"
+        else:
+            initial_state = "NEW"
         self.tickets[ticket_id] = TicketRecord(
             ticket_id=ticket_id,
             uid=notification.uid,
@@ -660,7 +668,7 @@ class InMemoryTicketHandler:
             dtend=notification.dtend,
             priority=priority,
             assigned_to_remediation_queue=assign_to_remediation_queue,
-            state="NEW",
+            state=initial_state,
             scoped_objects=notification.scoped_object_ids,
             history=[f"created(seq={notification.sequence}, priority={priority.value})"],
         )
