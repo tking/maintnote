@@ -1,12 +1,15 @@
 """maintnote: Python implementation of IETF draft-gunter-calext-maintenance-notifications-00."""
 
 from maintnote.email_utils import (
+    OpenPGPSigner,
     OpenPGPVerifier,
     PGPSignedParts,
     attach_notification,
     build_notification_email,
     extract_notifications_from_email,
     extract_pgp_signed_parts,
+    sign_notification_email,
+    strip_method_from_email,
     strip_method_from_ical,
     verify_email_signature,
 )
@@ -21,13 +24,14 @@ from maintnote.exceptions import (
     VerificationError,
     WorkflowError,
 )
-from maintnote.ical import ContentLine
+from maintnote.ical import ContentLine, ICalComponent
 from maintnote.models import (
     DEFAULT_PRODID,
     ICAL_VERSION,
     CalendarDocument,
     Impact,
     ImpactValue,
+    LocalizationStrings,
     MaintenanceNotification,
     Organizer,
     ServiceObject,
@@ -43,7 +47,13 @@ from maintnote.parser import (
     validate,
 )
 from maintnote.serializer import dump, dumps, dumps_calendar
-from maintnote.transport import AltrepResource, CalDAVClient, fetch_altrep_metadata
+from maintnote.transport import (
+    AltrepResource,
+    CalDAVClient,
+    CalDAVCollectionInfo,
+    CalDAVEvent,
+    fetch_altrep_metadata,
+)
 from maintnote.workflow import (
     InMemoryStateStore,
     InMemoryTicketHandler,
@@ -70,18 +80,23 @@ __all__ = [
     "ICAL_VERSION",
     "AltrepResource",
     "CalDAVClient",
+    "CalDAVCollectionInfo",
+    "CalDAVEvent",
     "CalendarDocument",
     "ContentLine",
+    "ICalComponent",
     "ICalSyntaxError",
     "Impact",
     "ImpactValue",
     "InMemoryStateStore",
     "InMemoryTicketHandler",
+    "LocalizationStrings",
     "MaintNoteError",
     "MaintenanceConsumer",
     "MaintenanceNotification",
     "MaintenanceProvider",
     "NotificationDiff",
+    "OpenPGPSigner",
     "OpenPGPVerifier",
     "Organizer",
     "OutOfBandVerifier",
@@ -120,6 +135,8 @@ __all__ = [
     "parse",
     "parse_calendar",
     "parse_with_diagnostics",
+    "sign_notification_email",
+    "strip_method_from_email",
     "strip_method_from_ical",
     "validate",
     "verify_email_signature",

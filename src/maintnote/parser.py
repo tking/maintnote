@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import IO
 
 from maintnote.exceptions import (
@@ -15,6 +16,7 @@ from maintnote.exceptions import (
 from maintnote.ical import (
     ContentLine,
     ICalComponent,
+    extract_vtimezone_offsets,
     parse_datetime,
     parse_ical_components,
     unescape_text,
@@ -26,6 +28,7 @@ from maintnote.models import (
     MaintenanceNotification,
     Organizer,
     ServiceObject,
+    Status,
     StatusValue,
 )
 
@@ -63,6 +66,21 @@ _MANAGED_EVENT_PROPS: frozenset[str] = frozenset(
     }
 )
 
+# Standard iTIP METHOD values (RFC 5546 Section 3.2)
+_STANDARD_ITIP_METHODS: frozenset[str] = frozenset(
+    {"PUBLISH", "REQUEST", "REPLY", "ADD", "CANCEL", "REFRESH", "COUNTER", "DECLINECOUNTER"}
+)
+_ATTENDEE_REQUIRED_METHODS: frozenset[str] = frozenset(
+    {"REQUEST", "REPLY", "COUNTER", "DECLINECOUNTER"}
+)
+
+# Mapping from RFC 5545 VEVENT STATUS to compatible X-MAINTNOTE-STATUS values
+_COMPATIBLE_ICAL_STATUSES: dict[str, frozenset[Status]] = {
+    "TENTATIVE": frozenset({Status.TENTATIVE}),
+    "CONFIRMED": frozenset({Status.CONFIRMED, Status.IN_PROCESS, Status.COMPLETED}),
+    "CANCELLED": frozenset({Status.CANCELLED}),
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ParseResult:
@@ -77,6 +95,11 @@ class ParseResult:
         if len(self.document.notifications) != 1:
             raise ParseError(f"Expected exactly 1 VEVENT, found {len(self.document.notifications)}")
         return self.document.notifications[0]
+
+
+def _is_valid_uri(uri: str) -> bool:
+    parsed = urllib.parse.urlparse(uri)
+    return bool(parsed.scheme) and bool(parsed.netloc or parsed.path)
 
 
 def validate(notification: MaintenanceNotification) -> list[ValidationIssue]:
@@ -106,6 +129,35 @@ def validate(notification: MaintenanceNotification) -> list[ValidationIssue]:
                 property_name="PRODID",
             )
         )
+
+    # Section 2.3.1 / RFC 5546 METHOD validation
+    if notification.method is not None:
+        method_upper = notification.method.strip().upper()
+        if method_upper not in _STANDARD_ITIP_METHODS:
+            issues.append(
+                ValidationIssue(
+                    code="UNRECOGNIZED_METHOD",
+                    message=f"METHOD {notification.method!r} is not a standard RFC 5546 iTIP method",
+                    severity="warning",
+                    property_name="METHOD",
+                )
+            )
+        elif method_upper in _ATTENDEE_REQUIRED_METHODS:
+            has_attendee = any(
+                prop.name == "ATTENDEE" for prop in notification.extra_event_properties
+            )
+            if not has_attendee:
+                issues.append(
+                    ValidationIssue(
+                        code="MISSING_METHOD_PROPERTY",
+                        message=(
+                            f"RFC 5546 METHOD:{method_upper} scheduling transactions typically "
+                            "require at least one ATTENDEE property"
+                        ),
+                        severity="warning",
+                        property_name="METHOD",
+                    )
+                )
 
     if not notification.uid.strip():
         issues.append(
@@ -176,6 +228,29 @@ def validate(notification: MaintenanceNotification) -> list[ValidationIssue]:
                 property_name="X-MAINTNOTE-OBJECT-ID",
             )
         )
+    else:
+        seen_objects: set[tuple[str, str | None]] = set()
+        for obj in notification.objects:
+            if obj.altrep is not None and not _is_valid_uri(obj.altrep):
+                issues.append(
+                    ValidationIssue(
+                        code="INVALID_ALTREP_URI",
+                        message=f"ALTREP parameter {obj.altrep!r} is not a valid URI (RFC 5545 §3.2.1)",
+                        severity="error",
+                        property_name="X-MAINTNOTE-OBJECT-ID",
+                    )
+                )
+            key = (obj.object_id, obj.altrep)
+            if key in seen_objects:
+                issues.append(
+                    ValidationIssue(
+                        code="DUPLICATE_OBJECT_ID",
+                        message=f"Duplicate X-MAINTNOTE-OBJECT-ID {obj.object_id!r}",
+                        severity="warning",
+                        property_name="X-MAINTNOTE-OBJECT-ID",
+                    )
+                )
+            seen_objects.add(key)
 
     # Timestamp comparability and ordering checks
     dtstart_aware = notification.dtstart.tzinfo is not None
@@ -209,6 +284,17 @@ def validate(notification: MaintenanceNotification) -> list[ValidationIssue]:
             )
         )
 
+    # Section 2.5.5: X-MAINTNOTE-IMPACT allows IANA and non-standard params (not LANGUAGE)
+    if "LANGUAGE" in notification.impact.params:
+        issues.append(
+            ValidationIssue(
+                code="DISALLOWED_LANGUAGE_PARAM",
+                message="Section 2.5.5 does not permit LANGUAGE parameter on X-MAINTNOTE-IMPACT",
+                severity="warning",
+                property_name="X-MAINTNOTE-IMPACT",
+            )
+        )
+
     if not notification.impact.is_standard:
         issues.append(
             ValidationIssue(
@@ -222,15 +308,26 @@ def validate(notification: MaintenanceNotification) -> list[ValidationIssue]:
             )
         )
 
-    if notification.status is not None and not notification.status.is_standard:
-        issues.append(
-            ValidationIssue(
-                code="NONSTANDARD_STATUS",
-                message=f"Non-standard X-MAINTNOTE-STATUS value {notification.status.raw!r}",
-                severity="warning",
-                property_name="X-MAINTNOTE-STATUS",
+    if notification.status is not None:
+        # Section 2.5.6: X-MAINTNOTE-STATUS allows IANA and non-standard params (not LANGUAGE)
+        if "LANGUAGE" in notification.status.params:
+            issues.append(
+                ValidationIssue(
+                    code="DISALLOWED_LANGUAGE_PARAM",
+                    message="Section 2.5.6 does not permit LANGUAGE parameter on X-MAINTNOTE-STATUS",
+                    severity="warning",
+                    property_name="X-MAINTNOTE-STATUS",
+                )
             )
-        )
+        if not notification.status.is_standard:
+            issues.append(
+                ValidationIssue(
+                    code="NONSTANDARD_STATUS",
+                    message=f"Non-standard X-MAINTNOTE-STATUS value {notification.status.raw!r}",
+                    severity="warning",
+                    property_name="X-MAINTNOTE-STATUS",
+                )
+            )
 
     # Check for conflicting extra properties (Section 2.4)
     for prop in notification.extra_calendar_properties:
@@ -254,6 +351,21 @@ def validate(notification: MaintenanceNotification) -> list[ValidationIssue]:
                     property_name=prop.name,
                 )
             )
+        elif prop.name == "STATUS" and notification.standard_status is not None:
+            ical_status = prop.value.strip().upper()
+            compatible = _COMPATIBLE_ICAL_STATUSES.get(ical_status)
+            if compatible is not None and notification.standard_status not in compatible:
+                issues.append(
+                    ValidationIssue(
+                        code="CONFLICTING_ICAL_STATUS",
+                        message=(
+                            f"RFC 5545 STATUS:{ical_status} conflicts with "
+                            f"X-MAINTNOTE-STATUS:{notification.standard_status.value} (Section 2.4)"
+                        ),
+                        severity="error",
+                        property_name="STATUS",
+                    )
+                )
 
     return issues
 
@@ -323,6 +435,8 @@ def parse_with_diagnostics(ical_text: str | bytes, *, strict: bool = True) -> Pa
     extra_cal_props = tuple(
         prop for prop in cal.properties if prop.name not in _MANAGED_CALENDAR_PROPS
     )
+    extra_cal_subcomponents = tuple(sub for sub in cal.subcomponents if sub.name != "VEVENT")
+    vtimezone_offsets = extract_vtimezone_offsets(cal)
 
     vevents = cal.get_subcomponents("VEVENT")
     if not vevents:
@@ -348,6 +462,8 @@ def parse_with_diagnostics(ical_text: str | bytes, *, strict: bool = True) -> Pa
             prodid=unescape_text(prodid.value),
             method=method_prop.value.strip().upper() if method_prop is not None else None,
             extra_calendar_properties=extra_cal_props,
+            extra_calendar_subcomponents=extra_cal_subcomponents,
+            vtimezone_offsets=vtimezone_offsets,
             strict=strict,
             warnings=warnings,
         )
@@ -359,6 +475,7 @@ def parse_with_diagnostics(ical_text: str | bytes, *, strict: bool = True) -> Pa
         prodid=unescape_text(prodid.value),
         method=method_prop.value.strip().upper() if method_prop is not None else None,
         extra_calendar_properties=extra_cal_props,
+        extra_calendar_subcomponents=extra_cal_subcomponents,
     )
     return ParseResult(document=doc, warnings=tuple(warnings))
 
@@ -370,6 +487,8 @@ def _parse_vevent(
     prodid: str,
     method: str | None,
     extra_calendar_properties: tuple[ContentLine, ...],
+    extra_calendar_subcomponents: tuple[ICalComponent, ...],
+    vtimezone_offsets: dict[str, timezone],
     strict: bool,
     warnings: list[ValidationIssue],
 ) -> MaintenanceNotification:
@@ -429,9 +548,32 @@ def _parse_vevent(
     location_prop = _optional_single_prop(normalized_event, "LOCATION", errors)
     url_prop = _optional_single_prop(normalized_event, "URL", errors)
 
-    dtstamp = _parse_dt_prop(dtstamp_prop, errors) if dtstamp_prop is not None else None
-    dtstart = _parse_dt_prop(dtstart_prop, errors) if dtstart_prop is not None else None
-    dtend = _parse_dt_prop(dtend_prop, errors) if dtend_prop is not None else None
+    # RFC 5545 Section 3.8.7.2: DTSTAMP MUST be specified in UTC (no TZID)
+    if dtstamp_prop is not None and dtstamp_prop.get_param("TZID") is not None:
+        errors.append(
+            ValidationIssue(
+                code="NON_UTC_DTSTAMP",
+                message="RFC 5545 §3.8.7.2 requires DTSTAMP to be in UTC without TZID",
+                severity="error",
+                property_name="DTSTAMP",
+            )
+        )
+
+    dtstamp = (
+        _parse_dt_prop(dtstamp_prop, errors, warnings, vtimezone_offsets)
+        if dtstamp_prop is not None
+        else None
+    )
+    dtstart = (
+        _parse_dt_prop(dtstart_prop, errors, warnings, vtimezone_offsets)
+        if dtstart_prop is not None
+        else None
+    )
+    dtend = (
+        _parse_dt_prop(dtend_prop, errors, warnings, vtimezone_offsets)
+        if dtend_prop is not None
+        else None
+    )
 
     sequence: int | None = None
     if sequence_prop is not None:
@@ -561,6 +703,7 @@ def _parse_vevent(
     extra_event_props = tuple(
         prop for prop in normalized_event.properties if prop.name not in _MANAGED_EVENT_PROPS
     )
+    extra_event_subcomponents = tuple(normalized_event.subcomponents)
 
     notification = MaintenanceNotification(
         uid=unescape_text(uid_prop.value),
@@ -584,11 +727,15 @@ def _parse_vevent(
         url=url_prop.value if url_prop is not None else None,
         summary_params=summary_prop.params,
         description_params=description_prop.params if description_prop is not None else {},
+        location_params=location_prop.params if location_prop is not None else {},
+        url_params=url_prop.params if url_prop is not None else {},
         provider_params=provider_prop.params,
         account_params=account_prop.params,
         maintenance_id_params=maint_id_prop.params,
         extra_calendar_properties=extra_calendar_properties,
         extra_event_properties=extra_event_props,
+        extra_calendar_subcomponents=extra_calendar_subcomponents,
+        extra_event_subcomponents=extra_event_subcomponents,
     )
 
     validation_issues = validate(notification)
@@ -648,10 +795,30 @@ def _optional_single_prop(
     return props[0]
 
 
-def _parse_dt_prop(prop: ContentLine, errors: list[ValidationIssue]) -> datetime | None:
+def _parse_dt_prop(
+    prop: ContentLine,
+    errors: list[ValidationIssue],
+    warnings: list[ValidationIssue],
+    vtimezone_offsets: dict[str, timezone],
+) -> datetime | None:
     tzid = prop.get_param("TZID")
+    value_type = prop.get_param("VALUE")
+    if (value_type and value_type.upper() == "DATE") or len(prop.value.strip()) == 8:
+        warnings.append(
+            ValidationIssue(
+                code="DATE_ONLY_TIMESTAMP",
+                message=f"{prop.name} uses VALUE=DATE instead of DATE-TIME; normalized to 00:00:00Z",
+                severity="warning",
+                property_name=prop.name,
+            )
+        )
     try:
-        return parse_datetime(prop.value, tzid=tzid)
+        return parse_datetime(
+            prop.value,
+            tzid=tzid,
+            value_type=value_type,
+            vtimezone_offsets=vtimezone_offsets,
+        )
     except ICalSyntaxError as exc:
         errors.append(
             ValidationIssue(

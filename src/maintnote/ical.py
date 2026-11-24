@@ -377,14 +377,82 @@ def parse_ical_components(raw: str) -> list[ICalComponent]:
     return roots
 
 
-def parse_datetime(value: str, *, tzid: str | None = None) -> datetime:
-    """Parse an RFC 5545 DATE-TIME string into a Python :class:`datetime`.
+_DATE_RE = re.compile(r"^(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})$")
+_TZOFFSET_RE = re.compile(r"^(?P<sign>[+-])(?P<hours>\d{2})(?P<minutes>\d{2})(?P<seconds>\d{2})?$")
+
+
+def parse_tzoffset(value: str) -> timezone:
+    """Parse an RFC 5545 UTC-OFFSET (e.g., ``-0500`` or ``+0530``) into a :class:`timezone`."""
+    match = _TZOFFSET_RE.match(value.strip())
+    if not match:
+        raise ICalSyntaxError(f"Invalid RFC 5545 UTC-OFFSET value: {value!r}")
+    sign = 1 if match.group("sign") == "+" else -1
+    hours = int(match.group("hours"))
+    minutes = int(match.group("minutes"))
+    seconds = int(match.group("seconds") or 0)
+    from datetime import timedelta
+
+    return timezone(sign * timedelta(hours=hours, minutes=minutes, seconds=seconds))
+
+
+def extract_vtimezone_offsets(calendar: ICalComponent) -> dict[str, timezone]:
+    """Extract fallback fixed UTC offsets from ``VTIMEZONE`` subcomponents.
+
+    Used when a ``TZID`` is not present in the local IANA ``zoneinfo`` database
+    (for example, Microsoft Windows timezone names like ``Eastern Standard Time``).
+    """
+    offsets: dict[str, timezone] = {}
+    for vtz in calendar.get_subcomponents("VTIMEZONE"):
+        tzid_prop = vtz.get_property("TZID")
+        if tzid_prop is None or not tzid_prop.value.strip():
+            continue
+        tzid = tzid_prop.value.strip()
+        # Prefer STANDARD observance TZOFFSETTO; fall back to DAYLIGHT
+        observances = vtz.get_subcomponents("STANDARD") + vtz.get_subcomponents("DAYLIGHT")
+        for obs in observances:
+            offset_prop = obs.get_property("TZOFFSETTO")
+            if offset_prop is not None:
+                try:
+                    offsets[tzid] = parse_tzoffset(offset_prop.value)
+                    break
+                except ICalSyntaxError:
+                    continue
+    return offsets
+
+
+def parse_datetime(
+    value: str,
+    *,
+    tzid: str | None = None,
+    value_type: str | None = None,
+    vtimezone_offsets: dict[str, timezone] | None = None,
+) -> datetime:
+    """Parse an RFC 5545 DATE-TIME (or DATE) string into a Python :class:`datetime`.
 
     UTC values (trailing ``Z``) return timezone-aware UTC datetimes. Values with
-    a ``TZID`` parameter return timezone-aware datetimes in that IANA timezone.
+    a ``TZID`` parameter return timezone-aware datetimes in that IANA timezone
+    (or fall back to offsets extracted from ``VTIMEZONE`` subcomponents).
     Floating values without ``Z`` or ``TZID`` return naive datetimes.
     """
     raw = value.strip()
+
+    if (value_type and value_type.upper() == "DATE") or _DATE_RE.match(raw):
+        dmatch = _DATE_RE.match(raw)
+        if not dmatch:
+            raise ICalSyntaxError(f"Invalid RFC 5545 DATE value: {value!r}")
+        try:
+            return datetime(
+                int(dmatch.group("year")),
+                int(dmatch.group("month")),
+                int(dmatch.group("day")),
+                0,
+                0,
+                0,
+                tzinfo=timezone.utc,
+            )
+        except ValueError as exc:
+            raise ICalSyntaxError(f"Invalid calendar date components in {value!r}: {exc}") from exc
+
     match = _DATETIME_RE.match(raw)
     if not match:
         raise ICalSyntaxError(f"Invalid RFC 5545 DATE-TIME value: {value!r}")
@@ -409,7 +477,10 @@ def parse_datetime(value: str, *, tzid: str | None = None) -> datetime:
         try:
             tzinfo = ZoneInfo(tzid)
         except ZoneInfoNotFoundError as exc:
-            raise ICalSyntaxError(f"Unknown TZID timezone: {tzid!r}") from exc
+            if vtimezone_offsets and tzid in vtimezone_offsets:
+                tzinfo = vtimezone_offsets[tzid]
+            else:
+                raise ICalSyntaxError(f"Unknown TZID timezone: {tzid!r}") from exc
 
     try:
         return datetime(year, month, day, hour, minute, second, tzinfo=tzinfo)
@@ -423,8 +494,8 @@ def format_datetime(
     """Format a Python :class:`datetime` as RFC 5545 DATE-TIME property params & value.
 
     Timezone-aware datetimes are normalized to UTC (``Z``) per common iCalendar
-    and draft Section 4 conventions. Naive datetimes are emitted as UTC if
-    converted upstream, or as floating DATE-TIME if left naive.
+    and draft Section 4 conventions. Naive datetimes are emitted as floating
+    DATE-TIME values.
     """
     params: dict[str, tuple[str, ...]] = {}
     if include_value_param:

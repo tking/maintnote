@@ -43,6 +43,7 @@ def dumps(
         prodid=notification.prodid,
         method=resolved_method,
         extra_calendar_properties=notification.extra_calendar_properties,
+        extra_calendar_subcomponents=notification.extra_calendar_subcomponents,
     )
     return dumps_calendar(
         doc,
@@ -106,8 +107,9 @@ def dumps_calendar(
         cal_props.append(ContentLine("METHOD", resolved_method.upper()))
     cal_props.extend(document.extra_calendar_properties)
 
-    vevents = [_build_vevent(notif) for notif in document.notifications]
-    vcal = ICalComponent(name="VCALENDAR", properties=cal_props, subcomponents=vevents)
+    subcomponents: list[ICalComponent] = list(document.extra_calendar_subcomponents)
+    subcomponents.extend(_build_vevent(notif) for notif in document.notifications)
+    vcal = ICalComponent(name="VCALENDAR", properties=cal_props, subcomponents=subcomponents)
     return vcal.to_ical(fold=fold_lines)
 
 
@@ -198,10 +200,18 @@ def _build_vevent(notification: MaintenanceNotification) -> ICalComponent:
         )
 
     if notification.location is not None:
-        props.append(ContentLine("LOCATION", escape_text(notification.location)))
+        props.append(
+            ContentLine(
+                "LOCATION", escape_text(notification.location), notification.location_params
+            )
+        )
 
     if notification.url is not None:
-        props.append(ContentLine("URL", notification.url))
+        props.append(ContentLine("URL", notification.url, notification.url_params))
 
     props.extend(notification.extra_event_properties)
-    return ICalComponent(name="VEVENT", properties=props)
+    return ICalComponent(
+        name="VEVENT",
+        properties=props,
+        subcomponents=list(notification.extra_event_subcomponents),
+    )

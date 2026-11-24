@@ -25,6 +25,7 @@ from maintnote.models import (
     DEFAULT_PRODID,
     Impact,
     ImpactValue,
+    LocalizationStrings,
     MaintenanceNotification,
     Organizer,
     ServiceObject,
@@ -42,6 +43,7 @@ class WorkflowAction(str, Enum):
 
     INITIAL = "INITIAL"
     UPDATED = "UPDATED"
+    NO_OP_UPDATE = "NO_OP_UPDATE"
     CANCELLED = "CANCELLED"
     OPENED = "OPENED"
     CLOSED = "CLOSED"
@@ -134,7 +136,12 @@ def compute_diff(
 
 
 class MaintenanceProvider:
-    """Provider-side workflow generator implementing Section 3.1.1-3.5.1."""
+    """Provider-side workflow generator implementing Section 3.1.1-3.5.1.
+
+    Tracks issued notifications per ``maintenance_id`` and account so multi-customer
+    batch lifecycles (initial -> update/confirm -> open -> close or cancel) can be
+    advanced cleanly while preserving per-consumer ``UID`` and monotonic ``SEQUENCE``.
+    """
 
     def __init__(
         self,
@@ -143,15 +150,19 @@ class MaintenanceProvider:
         organizer: Organizer | str,
         prodid: str = DEFAULT_PRODID,
         recipient_preferences: Mapping[str, RecipientPreference] | None = None,
+        localization: LocalizationStrings | None = None,
     ) -> None:
         self.provider = provider
         self.organizer = (
             organizer if isinstance(organizer, Organizer) else Organizer(address=organizer)
         )
         self.prodid = prodid
+        self.localization = localization or LocalizationStrings()
         self._recipient_preferences: dict[str, RecipientPreference] = dict(
             recipient_preferences or {}
         )
+        # Tracks latest issued notification per maintenance_id -> account
+        self._batches: dict[str, dict[str, MaintenanceNotification]] = {}
 
     def set_recipient_preference(self, account: str, preference: RecipientPreference) -> None:
         """Configure per-account ``METHOD`` preference (Section 2.3.1)."""
@@ -160,6 +171,25 @@ class MaintenanceProvider:
     def get_recipient_preference(self, account: str) -> RecipientPreference:
         """Return the ``METHOD`` preference for *account* (defaults to omitting METHOD)."""
         return self._recipient_preferences.get(account, RecipientPreference())
+
+    def get_batch(self, maintenance_id: str) -> dict[str, MaintenanceNotification]:
+        """Return the latest tracked notifications for *maintenance_id* keyed by account."""
+        if maintenance_id not in self._batches:
+            raise WorkflowError(f"Unknown maintenance_id {maintenance_id!r} in provider state")
+        return dict(self._batches[maintenance_id])
+
+    def _record(self, notification: MaintenanceNotification) -> MaintenanceNotification:
+        self._batches.setdefault(notification.maintenance_id, {})[notification.account] = (
+            notification
+        )
+        return notification
+
+    def _resolve_batch(
+        self, batch_or_id: Mapping[str, MaintenanceNotification] | str
+    ) -> Mapping[str, MaintenanceNotification]:
+        if isinstance(batch_or_id, str):
+            return self.get_batch(batch_or_id)
+        return batch_or_id
 
     def _resolve_method_for_account(self, account: str, *, is_cancel: bool = False) -> str | None:
         pref = self.get_recipient_preference(account)
@@ -189,7 +219,7 @@ class MaintenanceProvider:
         """Create an initial maintenance notification (Section 3.1.1)."""
         resolved_uid = uid if uid is not None else f"{uuid.uuid4()}@{self.provider}"
         method = self._resolve_method_for_account(account, is_cancel=False)
-        return MaintenanceNotification.create(
+        notif = MaintenanceNotification.create(
             uid=resolved_uid,
             sequence=initial_sequence,
             dtstamp=dtstamp or datetime.now(timezone.utc),
@@ -210,6 +240,7 @@ class MaintenanceProvider:
             url=url,
             language=language,
         )
+        return self._record(notif)
 
     def create_batch_initial(
         self,
@@ -285,7 +316,36 @@ class MaintenanceProvider:
             updates["status"] = status
         if objects is not None:
             updates["objects"] = list(objects)
-        return previous.with_updates(**updates)
+        return self._record(previous.with_updates(**updates))
+
+    def update_batch(
+        self,
+        batch_or_id: Mapping[str, MaintenanceNotification] | str,
+        *,
+        dtstart: datetime | None = None,
+        dtend: datetime | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        impact: Impact | ImpactValue | str | None = None,
+        status: Status | StatusValue | str | None = None,
+        dtstamp: datetime | None = None,
+    ) -> dict[str, MaintenanceNotification]:
+        """Fan out a window/details update across all accounts in a maintenance batch."""
+        stamp = dtstamp or datetime.now(timezone.utc)
+        batch = self._resolve_batch(batch_or_id)
+        return {
+            account: self.update_window(
+                prev,
+                dtstart=dtstart,
+                dtend=dtend,
+                summary=summary,
+                description=description,
+                impact=impact,
+                status=status,
+                dtstamp=stamp,
+            )
+            for account, prev in batch.items()
+        }
 
     def confirm(
         self,
@@ -300,6 +360,27 @@ class MaintenanceProvider:
         """Confirm a tentative or updated maintenance window (Example 4.2)."""
         return self.update_window(
             previous,
+            dtstart=dtstart,
+            dtend=dtend,
+            summary=summary,
+            description=description,
+            status=Status.CONFIRMED,
+            dtstamp=dtstamp,
+        )
+
+    def confirm_batch(
+        self,
+        batch_or_id: Mapping[str, MaintenanceNotification] | str,
+        *,
+        dtstart: datetime | None = None,
+        dtend: datetime | None = None,
+        summary: str | None = None,
+        description: str | None = None,
+        dtstamp: datetime | None = None,
+    ) -> dict[str, MaintenanceNotification]:
+        """Confirm a maintenance window across all accounts in a batch."""
+        return self.update_batch(
+            batch_or_id,
             dtstart=dtstart,
             dtend=dtend,
             summary=summary,
@@ -329,7 +410,23 @@ class MaintenanceProvider:
             updates["summary"] = summary
         if description is not None:
             updates["description"] = description
-        return previous.with_updates(**updates)
+        return self._record(previous.with_updates(**updates))
+
+    def cancel_batch(
+        self,
+        batch_or_id: Mapping[str, MaintenanceNotification] | str,
+        *,
+        summary: str | None = None,
+        description: str | None = None,
+        dtstamp: datetime | None = None,
+    ) -> dict[str, MaintenanceNotification]:
+        """Cancel a maintenance across all accounts in a batch (Section 3.3.1)."""
+        stamp = dtstamp or datetime.now(timezone.utc)
+        batch = self._resolve_batch(batch_or_id)
+        return {
+            account: self.cancel(prev, summary=summary, description=description, dtstamp=stamp)
+            for account, prev in batch.items()
+        }
 
     def open_window(
         self,
@@ -342,9 +439,10 @@ class MaintenanceProvider:
     ) -> MaintenanceNotification:
         """Declare a scheduled maintenance window open / ``IN-PROCESS`` (Section 3.4.1)."""
         self._guard_terminal(previous, allow_from_terminal=allow_from_terminal, action="open")
+        open_prefix = self.localization.open_prefix
         resolved_summary = summary
-        if resolved_summary is None and not previous.summary.startswith("Open - "):
-            resolved_summary = f"Open - {previous.summary}"
+        if resolved_summary is None and not previous.summary.startswith(open_prefix):
+            resolved_summary = f"{open_prefix}{previous.summary}"
         updates: dict[str, object] = {
             "sequence": previous.sequence + 1,
             "dtstamp": dtstamp or datetime.now(timezone.utc),
@@ -355,7 +453,23 @@ class MaintenanceProvider:
             updates["summary"] = resolved_summary
         if description is not None:
             updates["description"] = description
-        return previous.with_updates(**updates)
+        return self._record(previous.with_updates(**updates))
+
+    def open_batch(
+        self,
+        batch_or_id: Mapping[str, MaintenanceNotification] | str,
+        *,
+        summary: str | None = None,
+        description: str | None = None,
+        dtstamp: datetime | None = None,
+    ) -> dict[str, MaintenanceNotification]:
+        """Declare a maintenance window open across all accounts in a batch (Section 3.4.1)."""
+        stamp = dtstamp or datetime.now(timezone.utc)
+        batch = self._resolve_batch(batch_or_id)
+        return {
+            account: self.open_window(prev, summary=summary, description=description, dtstamp=stamp)
+            for account, prev in batch.items()
+        }
 
     def close_window(
         self,
@@ -368,12 +482,14 @@ class MaintenanceProvider:
     ) -> MaintenanceNotification:
         """Declare a maintenance window closed / ``COMPLETED`` (Section 3.5.1)."""
         self._guard_terminal(previous, allow_from_terminal=allow_from_terminal, action="close")
+        open_prefix = self.localization.open_prefix
+        closed_prefix = self.localization.closed_prefix
         resolved_summary = summary
         if resolved_summary is None:
             base = previous.summary
-            if base.startswith("Open - "):
-                base = base[len("Open - ") :]
-            resolved_summary = base if base.startswith("Closed - ") else f"Closed - {base}"
+            if open_prefix and base.startswith(open_prefix):
+                base = base[len(open_prefix) :]
+            resolved_summary = base if base.startswith(closed_prefix) else f"{closed_prefix}{base}"
         updates: dict[str, object] = {
             "sequence": previous.sequence + 1,
             "dtstamp": dtstamp or datetime.now(timezone.utc),
@@ -384,7 +500,25 @@ class MaintenanceProvider:
             updates["summary"] = resolved_summary
         if description is not None:
             updates["description"] = description
-        return previous.with_updates(**updates)
+        return self._record(previous.with_updates(**updates))
+
+    def close_batch(
+        self,
+        batch_or_id: Mapping[str, MaintenanceNotification] | str,
+        *,
+        summary: str | None = None,
+        description: str | None = None,
+        dtstamp: datetime | None = None,
+    ) -> dict[str, MaintenanceNotification]:
+        """Declare a maintenance window closed across all accounts in a batch (Section 3.5.1)."""
+        stamp = dtstamp or datetime.now(timezone.utc)
+        batch = self._resolve_batch(batch_or_id)
+        return {
+            account: self.close_window(
+                prev, summary=summary, description=description, dtstamp=stamp
+            )
+            for account, prev in batch.items()
+        }
 
     @staticmethod
     def _guard_terminal(
@@ -401,7 +535,7 @@ class MaintenanceProvider:
 
 @dataclass(frozen=True, slots=True)
 class TrackedMaintenance:
-    """State persisted by a consumer for a maintenance notification UID."""
+    """State persisted by a consumer for a ``(provider, uid)`` maintenance notification."""
 
     uid: str
     provider: str
@@ -415,13 +549,13 @@ class TrackedMaintenance:
 
 @runtime_checkable
 class StateStore(Protocol):
-    """Persistence interface for consumer-side UID & SEQUENCE tracking."""
+    """Persistence interface for consumer-side ``(provider, UID)`` & ``SEQUENCE`` tracking."""
 
-    def get(self, uid: str) -> TrackedMaintenance | None:
-        """Retrieve tracked state for *uid*, or ``None`` if unseen."""
+    def get(self, uid: str, *, provider: str | None = None) -> TrackedMaintenance | None:
+        """Retrieve tracked state for ``(provider, uid)``, or ``uid`` if *provider* is omitted."""
 
     def save(self, record: TrackedMaintenance) -> None:
-        """Persist or update tracked state for ``record.uid``."""
+        """Persist or update tracked state for ``(record.provider, record.uid)``."""
 
     def list_by_scoped_object(self, provider: str, object_id: str) -> list[TrackedMaintenance]:
         """List all tracked maintenances affecting ``(provider, object_id)``."""
@@ -431,16 +565,21 @@ class StateStore(Protocol):
 
 
 class InMemoryStateStore:
-    """In-memory :class:`StateStore` implementation suitable for tests and ephemeral workers."""
+    """In-memory :class:`StateStore` keyed by ``(provider, uid)`` to prevent cross-provider collisions."""
 
     def __init__(self) -> None:
-        self._records: dict[str, TrackedMaintenance] = {}
+        self._records: dict[tuple[str, str], TrackedMaintenance] = {}
 
-    def get(self, uid: str) -> TrackedMaintenance | None:
-        return self._records.get(uid)
+    def get(self, uid: str, *, provider: str | None = None) -> TrackedMaintenance | None:
+        if provider is not None:
+            return self._records.get((provider, uid))
+        matches = [rec for (_, rec_uid), rec in self._records.items() if rec_uid == uid]
+        if not matches:
+            return None
+        return max(matches, key=lambda r: r.updated_at)
 
     def save(self, record: TrackedMaintenance) -> None:
-        self._records[record.uid] = record
+        self._records[(record.provider, record.uid)] = record
 
     def list_by_scoped_object(self, provider: str, object_id: str) -> list[TrackedMaintenance]:
         target = (provider, object_id)
@@ -453,22 +592,23 @@ class InMemoryStateStore:
 
 
 class SQLiteStateStore:
-    """Persistent SQLite-backed :class:`StateStore` using Python's stdlib ``sqlite3``."""
+    """Persistent SQLite-backed :class:`StateStore` keyed by ``(provider, uid)``."""
 
     def __init__(self, path: str | Path = ":memory:") -> None:
         self._conn = sqlite3.connect(str(path))
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS maintenance_state (
-                uid TEXT PRIMARY KEY,
                 provider TEXT NOT NULL,
+                uid TEXT NOT NULL,
                 maintenance_id TEXT NOT NULL,
                 account TEXT NOT NULL,
                 sequence INTEGER NOT NULL,
                 ticket_id TEXT NOT NULL,
                 scoped_objects_json TEXT NOT NULL,
                 raw_ical TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (provider, uid)
             )
             """
         )
@@ -478,14 +618,24 @@ class SQLiteStateStore:
         """Close the underlying SQLite connection."""
         self._conn.close()
 
-    def get(self, uid: str) -> TrackedMaintenance | None:
-        row = self._conn.execute(
-            """
-            SELECT uid, provider, maintenance_id, account, sequence, ticket_id, raw_ical, updated_at
-            FROM maintenance_state WHERE uid = ?
-            """,
-            (uid,),
-        ).fetchone()
+    def get(self, uid: str, *, provider: str | None = None) -> TrackedMaintenance | None:
+        if provider is not None:
+            row = self._conn.execute(
+                """
+                SELECT uid, provider, maintenance_id, account, sequence, ticket_id, raw_ical, updated_at
+                FROM maintenance_state WHERE provider = ? AND uid = ?
+                """,
+                (provider, uid),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                """
+                SELECT uid, provider, maintenance_id, account, sequence, ticket_id, raw_ical, updated_at
+                FROM maintenance_state WHERE uid = ?
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (uid,),
+            ).fetchone()
         if row is None:
             return None
         return self._row_to_record(row)
@@ -496,11 +646,10 @@ class SQLiteStateStore:
         self._conn.execute(
             """
             INSERT INTO maintenance_state (
-                uid, provider, maintenance_id, account, sequence,
+                provider, uid, maintenance_id, account, sequence,
                 ticket_id, scoped_objects_json, raw_ical, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(uid) DO UPDATE SET
-                provider = excluded.provider,
+            ON CONFLICT(provider, uid) DO UPDATE SET
                 maintenance_id = excluded.maintenance_id,
                 account = excluded.account,
                 sequence = excluded.sequence,
@@ -510,8 +659,8 @@ class SQLiteStateStore:
                 updated_at = excluded.updated_at
             """,
             (
-                record.uid,
                 record.provider,
+                record.uid,
                 record.maintenance_id,
                 record.account,
                 record.sequence,
@@ -762,9 +911,11 @@ class ProcessingResult:
 class MaintenanceConsumer:
     """Consumer-side workflow processor implementing Section 3.1.2-3.5.2.
 
-    Tracks notifications by ``UID`` and ``SEQUENCE`` in a pluggable :class:`StateStore`,
-    guards against out-of-order or duplicate updates, applies Section 2.5.5 ``OUTAGE``
-    impact defaults, and dispatches lifecycle transitions to a :class:`TicketHandler`.
+    Tracks notifications by ``(provider, UID)`` and ``SEQUENCE`` in a pluggable
+    :class:`StateStore`, guards against out-of-order or duplicate updates, skips
+    no-op ticket mutations when no ticket-relevant fields changed (Section 3.2.2),
+    applies Section 2.5.5 ``OUTAGE`` impact defaults, and dispatches lifecycle
+    transitions to a :class:`TicketHandler`.
     """
 
     def __init__(
@@ -773,10 +924,12 @@ class MaintenanceConsumer:
         store: StateStore | None = None,
         handler: TicketHandler | None = None,
         verifier: OutOfBandVerifier | None = None,
+        skip_noop_ticket_updates: bool = True,
     ) -> None:
         self.store: StateStore = store if store is not None else InMemoryStateStore()
         self.handler: TicketHandler = handler if handler is not None else InMemoryTicketHandler()
         self.verifier = verifier
+        self.skip_noop_ticket_updates = skip_noop_ticket_updates
 
     def process(
         self,
@@ -801,7 +954,7 @@ class MaintenanceConsumer:
         # Per Section 3.1.2: tentative notifications are not assigned to remediation queue
         assign_to_remediation = not notification.is_tentative and not notification.is_cancelled
 
-        existing = self.store.get(notification.uid)
+        existing = self.store.get(notification.uid, provider=notification.provider)
         now = datetime.now(timezone.utc)
 
         if existing is None:
@@ -863,6 +1016,8 @@ class MaintenanceConsumer:
         elif notification.is_closed:
             self.handler.close_ticket(ticket_id, notification, diff)
             action = WorkflowAction.CLOSED
+        elif self.skip_noop_ticket_updates and not diff.has_changes:
+            action = WorkflowAction.NO_OP_UPDATE
         else:
             self.handler.update_ticket(
                 ticket_id,

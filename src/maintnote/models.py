@@ -8,10 +8,28 @@ from enum import Enum
 from typing import Any
 
 from maintnote.exceptions import ValidationError
-from maintnote.ical import ContentLine, is_valid_iana_token, is_valid_x_name
+from maintnote.ical import ContentLine, ICalComponent, is_valid_iana_token, is_valid_x_name
 
 DEFAULT_PRODID = "-//maintnote//https://github.com/maintnote/maintnote//EN"
 ICAL_VERSION = "2.0"
+
+
+@dataclass(frozen=True, slots=True)
+class LocalizationStrings:
+    """Configurable localized labels for generated summaries and emails (Section 5.1)."""
+
+    open_prefix: str = "Open - "
+    closed_prefix: str = "Closed - "
+    email_title: str = "Maintenance Notification"
+    email_provider: str = "Provider"
+    email_account: str = "Account"
+    email_maintenance_id: str = "Maintenance ID"
+    email_window: str = "Window"
+    email_window_separator: str = "to"
+    email_impact: str = "Impact"
+    email_status: str = "Status"
+    email_status_unspecified: str = "UNSPECIFIED"
+    email_objects: str = "Objects"
 
 
 class Impact(str, Enum):
@@ -301,13 +319,17 @@ class MaintenanceNotification:
     # Optional property parameters (e.g., LANGUAGE per Section 5.1, IANA/x-params)
     summary_params: dict[str, tuple[str, ...]] = field(default_factory=dict)
     description_params: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    location_params: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    url_params: dict[str, tuple[str, ...]] = field(default_factory=dict)
     provider_params: dict[str, tuple[str, ...]] = field(default_factory=dict)
     account_params: dict[str, tuple[str, ...]] = field(default_factory=dict)
     maintenance_id_params: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
-    # Extra RFC 5545 properties preserved across round-trips (Section 2.4)
+    # Extra RFC 5545 properties and subcomponents preserved across round-trips (Section 2.4)
     extra_calendar_properties: tuple[ContentLine, ...] = ()
     extra_event_properties: tuple[ContentLine, ...] = ()
+    extra_calendar_subcomponents: tuple[ICalComponent, ...] = ()
+    extra_event_subcomponents: tuple[ICalComponent, ...] = ()
 
     @classmethod
     def create(
@@ -334,6 +356,8 @@ class MaintenanceNotification:
         language: str | None = None,
         extra_calendar_properties: tuple[ContentLine, ...] = (),
         extra_event_properties: tuple[ContentLine, ...] = (),
+        extra_calendar_subcomponents: tuple[ICalComponent, ...] = (),
+        extra_event_subcomponents: tuple[ICalComponent, ...] = (),
     ) -> MaintenanceNotification:
         """Ergonomic factory with automatic coercion of enums, strings, and UTC timestamps."""
         org = organizer if isinstance(organizer, Organizer) else Organizer(address=organizer)
@@ -370,6 +394,8 @@ class MaintenanceNotification:
             description_params=dict(lang_params) if description is not None else {},
             extra_calendar_properties=extra_calendar_properties,
             extra_event_properties=extra_event_properties,
+            extra_calendar_subcomponents=extra_calendar_subcomponents,
+            extra_event_subcomponents=extra_event_subcomponents,
         )
 
     @property
@@ -484,3 +510,4 @@ class CalendarDocument:
     prodid: str = DEFAULT_PRODID
     method: str | None = None
     extra_calendar_properties: tuple[ContentLine, ...] = ()
+    extra_calendar_subcomponents: tuple[ICalComponent, ...] = ()

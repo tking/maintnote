@@ -24,8 +24,8 @@ class _MockResponse:
         self.headers = headers or {}
         self.status = status
 
-    def read(self) -> bytes:
-        return self._stream.read()
+    def read(self, n: int = -1) -> bytes:
+        return self._stream.read(n)
 
     def __enter__(self) -> _MockResponse:
         return self

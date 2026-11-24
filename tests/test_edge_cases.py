@@ -397,8 +397,8 @@ def test_transport_error_paths_and_bearer_auth() -> None:
             self._io = io.BytesIO(body)
             self.headers = {"Content-Type": content_type}
 
-        def read(self) -> bytes:
-            return self._io.read()
+        def read(self, n: int = -1) -> bytes:
+            return self._io.read(n)
 
         def __enter__(self) -> _StaticResponse:
             return self

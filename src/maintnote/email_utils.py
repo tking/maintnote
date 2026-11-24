@@ -1,20 +1,23 @@
-"""Email/MIME, METHOD pre-processing, and RFC 3156 OpenPGP verification helpers.
+"""Email/MIME, METHOD pre-processing, and RFC 3156 OpenPGP signing & verification helpers.
 
 Covers Section 2.3.1 (pre-processing to avoid unwanted human calendar auto-population),
-Section 3 (routing iCalendar email attachments), and Section 5.2 (OpenPGP RFC 3156
-authentication of maintenance notification emails).
+Section 3 (routing iCalendar email attachments), Section 5.1 (localization), and
+Section 5.2 (OpenPGP RFC 3156 authentication of maintenance notification emails).
 """
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from email import message_from_bytes, message_from_string, policy
 from email.message import EmailMessage, Message
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
 from typing import Protocol, runtime_checkable
 
 from maintnote.exceptions import ParseError, VerificationError
 from maintnote.ical import parse_ical_components
-from maintnote.models import MaintenanceNotification
+from maintnote.models import LocalizationStrings, MaintenanceNotification
 from maintnote.parser import parse_calendar
 from maintnote.serializer import dumps
 
@@ -25,6 +28,14 @@ class OpenPGPVerifier(Protocol):
 
     def verify(self, signed_payload: bytes, detached_signature: bytes) -> bool:
         """Return True if *detached_signature* is a valid OpenPGP signature over *signed_payload*."""
+
+
+@runtime_checkable
+class OpenPGPSigner(Protocol):
+    """Protocol for producing detached OpenPGP signatures per RFC 3156 Section 5."""
+
+    def sign(self, payload: bytes) -> bytes:
+        """Return an ASCII-armored detached OpenPGP signature over canonical CRLF *payload*."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +59,44 @@ def strip_method_from_ical(ical_text: str) -> str:
         if comp.name == "VCALENDAR":
             comp.properties = [prop for prop in comp.properties if prop.name != "METHOD"]
     return "".join(comp.to_ical() for comp in components)
+
+
+def strip_method_from_email(message: Message | bytes | str) -> Message:
+    """Return a copy of *message* with ``METHOD`` removed from both MIME headers and ``.ics`` parts.
+
+    Implements Section 2.3.1 email-level pre-processing so human calendaring clients
+    do not treat forwarded maintenance emails as automatic scheduling transactions.
+    """
+    cloned = copy.deepcopy(_coerce_message(message))
+    for part in cloned.walk():
+        if part.is_multipart():
+            continue
+        content_type = part.get_content_type().lower()
+        filename = (part.get_filename() or "").lower()
+        if content_type != "text/calendar" and not filename.endswith(".ics"):
+            continue
+
+        # Remove MIME Content-Type `method=...` parameter if present
+        if part.get_param("method") is not None:
+            part.del_param("method")
+
+        raw_payload = part.get_payload(decode=True)
+        charset = part.get_content_charset() or "utf-8"
+        if isinstance(raw_payload, bytes):
+            ical_text = raw_payload.decode(charset, errors="replace")
+        else:
+            str_payload = part.get_payload()
+            if not isinstance(str_payload, str):
+                continue
+            ical_text = str_payload
+
+        cleaned = strip_method_from_ical(ical_text)
+        # Preserve clean text payload and drop stale transfer encoding header if re-setting
+        if "Content-Transfer-Encoding" in part:
+            del part["Content-Transfer-Encoding"]
+        part.set_payload(cleaned, charset=charset)
+
+    return cloned
 
 
 def attach_notification(
@@ -95,22 +144,28 @@ def build_notification_email(
     filename: str = "maintenance.ics",
     include_method: bool | None = None,
     method: str | None = None,
+    localization: LocalizationStrings | None = None,
 ) -> EmailMessage:
     """Create a complete RFC 5322 email with plain-text body and ``.ics`` attachment."""
+    loc = localization or LocalizationStrings()
     msg = EmailMessage()
     msg["From"] = sender
     msg["To"] = recipient
     msg["Subject"] = subject if subject is not None else notification.summary
 
+    status_label = (
+        notification.status.raw if notification.status is not None else loc.email_status_unspecified
+    )
     default_body = (
-        f"Maintenance Notification: {notification.summary}\n"
-        f"Provider: {notification.provider}\n"
-        f"Account: {notification.account}\n"
-        f"Maintenance ID: {notification.maintenance_id}\n"
-        f"Window: {notification.dtstart.isoformat()} to {notification.dtend.isoformat()}\n"
-        f"Impact: {notification.impact.raw}\n"
-        f"Status: {notification.status.raw if notification.status is not None else 'UNSPECIFIED'}\n"
-        f"Objects: {', '.join(notification.object_ids)}\n"
+        f"{loc.email_title}: {notification.summary}\n"
+        f"{loc.email_provider}: {notification.provider}\n"
+        f"{loc.email_account}: {notification.account}\n"
+        f"{loc.email_maintenance_id}: {notification.maintenance_id}\n"
+        f"{loc.email_window}: {notification.dtstart.isoformat()} "
+        f"{loc.email_window_separator} {notification.dtend.isoformat()}\n"
+        f"{loc.email_impact}: {notification.impact.raw}\n"
+        f"{loc.email_status}: {status_label}\n"
+        f"{loc.email_objects}: {', '.join(notification.object_ids)}\n"
     )
     msg.set_content(body if body is not None else default_body)
     attach_notification(
@@ -123,12 +178,60 @@ def build_notification_email(
     return msg
 
 
+def sign_notification_email(
+    message: Message,
+    signer: OpenPGPSigner,
+    *,
+    micalg: str = "pgp-sha256",
+) -> MIMEMultipart:
+    """Wrap *message* in an RFC 3156 ``multipart/signed`` OpenPGP envelope (Section 5.2).
+
+    Copies top-level transport headers (``From``, ``To``, ``Cc``, ``Subject``,
+    ``Date``, ``Message-ID``) onto the outer signed envelope and computes the
+    detached OpenPGP signature over the canonical CRLF MIME entity bytes.
+    """
+    inner = copy.deepcopy(message)
+    outer = MIMEMultipart(
+        "signed",
+        micalg=micalg,
+        protocol="application/pgp-signature",
+    )
+    for header in ("From", "To", "Cc", "Subject", "Date", "Message-ID"):
+        if header in inner:
+            outer[header] = inner[header]
+            del inner[header]
+
+    canonical_payload = _canonicalize_crlf(inner.as_bytes(policy=policy.SMTP))
+    detached_sig = signer.sign(canonical_payload)
+
+    outer.attach(inner)
+    sig_part = MIMEApplication(
+        detached_sig,
+        _subtype="pgp-signature",
+        name="signature.asc",
+    )
+    sig_part.add_header("Content-Description", "OpenPGP digital signature")
+    outer.attach(sig_part)
+    return outer
+
+
 def extract_pgp_signed_parts(message: Message | bytes | str) -> PGPSignedParts | None:
     """Extract the signed payload and detached PGP signature from an RFC 3156 email.
+
+    When raw ``bytes`` or ``str`` input is provided, the signed entity is sliced
+    verbatim from the raw bytes between the outer ``multipart/signed`` boundary
+    delimiters (canonicalized to CRLF per RFC 3156 §5) so re-serialization cannot
+    invalidate the cryptographic signature.
 
     Returns ``None`` if the message is not ``multipart/signed`` with
     ``protocol="application/pgp-signature"``.
     """
+    raw_bytes: bytes | None = None
+    if isinstance(message, bytes):
+        raw_bytes = message
+    elif isinstance(message, str):
+        raw_bytes = message.encode("utf-8")
+
     msg = _coerce_message(message)
     if msg.get_content_type().lower() != "multipart/signed":
         return None
@@ -154,8 +257,15 @@ def extract_pgp_signed_parts(message: Message | bytes | str) -> PGPSignedParts |
             f"got {sig_entity.get_content_type()!r}"
         )
 
-    # Canonicalize signed entity line endings to CRLF per RFC 3156 Section 5
-    signed_bytes = signed_entity.as_bytes(policy=policy.SMTP)
+    signed_bytes: bytes | None = None
+    boundary = msg.get_boundary()
+    if raw_bytes is not None and boundary:
+        signed_bytes = _slice_raw_signed_entity(raw_bytes, boundary)
+
+    if signed_bytes is None:
+        # Fallback when caller passed an already-constructed in-memory Message
+        signed_bytes = _canonicalize_crlf(signed_entity.as_bytes(policy=policy.SMTP))
+
     sig_payload = sig_entity.get_payload(decode=True)
     if not isinstance(sig_payload, bytes):
         raw_sig = sig_entity.get_payload()
@@ -205,12 +315,12 @@ def extract_notifications_from_email(
     require_pgp_signature: bool = False,
 ) -> list[MaintenanceNotification]:
     """Extract and parse all maintenance notifications attached to an email message."""
-    msg = _coerce_message(message)
-
     if pgp_verifier is not None:
-        verify_email_signature(msg, pgp_verifier, require_signature=require_pgp_signature)
+        verify_email_signature(message, pgp_verifier, require_signature=require_pgp_signature)
     elif require_pgp_signature:
         raise VerificationError("require_pgp_signature=True requires a pgp_verifier")
+
+    msg = _coerce_message(message)
 
     notifications: list[MaintenanceNotification] = []
     for part in msg.walk():
@@ -247,3 +357,23 @@ def _coerce_message(message: Message | bytes | str) -> Message:
     if isinstance(message, bytes):
         return message_from_bytes(message, policy=policy.default)
     return message_from_string(message, policy=policy.default)
+
+
+def _canonicalize_crlf(data: bytes) -> bytes:
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").replace(b"\n", b"\r\n")
+
+
+def _slice_raw_signed_entity(raw_bytes: bytes, boundary: str) -> bytes | None:
+    """Extract the exact raw signed MIME entity between the first two boundary markers."""
+    canonical = _canonicalize_crlf(raw_bytes)
+    delim = b"--" + boundary.encode("ascii", errors="ignore")
+    first = canonical.find(delim + b"\r\n")
+    if first == -1:
+        return None
+    start = first + len(delim) + 2  # skip first delimiter + CRLF
+    second = canonical.find(b"\r\n" + delim, start)
+    if second == -1:
+        return None
+    # Per RFC 3156 Section 5, the CRLF preceding the second boundary belongs to the delimiter,
+    # NOT to the signed entity.
+    return canonical[start:second]

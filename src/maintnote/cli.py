@@ -9,7 +9,11 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from maintnote.email_utils import extract_notifications_from_email, strip_method_from_ical
+from maintnote.email_utils import (
+    extract_notifications_from_email,
+    strip_method_from_email,
+    strip_method_from_ical,
+)
 from maintnote.exceptions import MaintNoteError
 from maintnote.models import Organizer, ServiceObject, Status
 from maintnote.parser import parse, parse_with_diagnostics
@@ -89,6 +93,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     strip_p.add_argument("path", type=Path, help="Path to .ics file (use '-' for stdin)")
 
+    # strip-email-method
+    strip_eml_p = sub.add_parser(
+        "strip-email-method",
+        help="Rewrite an .eml file removing METHOD from MIME headers and .ics attachments (Section 2.3.1)",
+    )
+    strip_eml_p.add_argument("path", type=Path, help="Path to .eml file (use '-' for stdin)")
+    strip_eml_p.add_argument(
+        "-o", "--output", type=Path, help="Output .eml path (defaults to stdout)"
+    )
+
     # extract-email
     email_p = sub.add_parser(
         "extract-email",
@@ -116,6 +130,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_generate(args)
         if args.command == "strip-method":
             return _cmd_strip_method(args)
+        if args.command == "strip-email-method":
+            return _cmd_strip_email_method(args)
         if args.command == "extract-email":
             return _cmd_extract_email(args)
     except MaintNoteError as exc:
@@ -286,6 +302,17 @@ def _cmd_generate(args: argparse.Namespace) -> int:
 def _cmd_strip_method(args: argparse.Namespace) -> int:
     raw = _read_text(args.path)
     sys.stdout.write(strip_method_from_ical(raw))
+    return 0
+
+
+def _cmd_strip_email_method(args: argparse.Namespace) -> int:
+    raw = _read_bytes(args.path)
+    cleaned = strip_method_from_email(raw)
+    rendered = cleaned.as_bytes()
+    if args.output:
+        args.output.write_bytes(rendered)
+    else:
+        sys.stdout.buffer.write(rendered)
     return 0
 
 
