@@ -1,0 +1,20 @@
+site_name: maintnote
+site_description: Python implementation of IETF draft-gunter-calext-maintenance-notifications-00
+repo_name: maintnote
+repo_url: https://github.com/maintnote/maintnote
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - content.code.copy
+nav:
+  - Overview: index.md
+  - Getting Started: getting-started.md
+  - Specification Compliance: specification-compliance.md
+  - Workflows: workflows.md
+  - Security & Transport: security-and-transport.md
+  - API Reference: api-reference.md
+markdown_extensions:
+  - admonition
+  - tables
+  - fenced_code
