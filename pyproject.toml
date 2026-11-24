@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.10"
 authors = [
-    { name = "maintnote contributors" },
+    { name = "Thomas King" },
 ]
 keywords = [
     "icalendar",
@@ -59,9 +59,9 @@ docs = [
 maintnote = "maintnote.cli:main"
 
 [project.urls]
-Documentation = "https://github.com/maintnote/maintnote#readme"
-Repository = "https://github.com/maintnote/maintnote"
-Issues = "https://github.com/maintnote/maintnote/issues"
+Documentation = "https://github.com/tking/maintnote#readme"
+Repository = "https://github.com/tking/maintnote"
+Issues = "https://github.com/tking/maintnote/issues"
 Specification = "https://datatracker.ietf.org/doc/html/draft-gunter-calext-maintenance-notifications-00"
 
 [tool.setuptools.packages.find]

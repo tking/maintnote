@@ -10,7 +10,7 @@ from typing import Any
 from maintnote.exceptions import ValidationError
 from maintnote.ical import ContentLine, ICalComponent, is_valid_iana_token, is_valid_x_name
 
-DEFAULT_PRODID = "-//maintnote//https://github.com/maintnote/maintnote//EN"
+DEFAULT_PRODID = "-//maintnote//https://github.com/tking/maintnote//EN"
 ICAL_VERSION = "2.0"
 
 
