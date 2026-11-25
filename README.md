@@ -185,6 +185,23 @@ maintnote extract-email message.eml --json
 
 ---
 
+## Examples
+
+Runnable Python scripts, sample `.ics` / `.eml` fixtures, and a CLI walkthrough live in [`examples/`](examples/):
+
+| Example | What it demonstrates |
+| --- | --- |
+| [`examples/provider_lifecycle.py`](examples/provider_lifecycle.py) | Provider-side initial → confirmed → open → closed lifecycle |
+| [`examples/consumer_pipeline.py`](examples/consumer_pipeline.py) | Consumer email extraction, SQLite state tracking, and out-of-order protection |
+| [`examples/multi_customer_batch.py`](examples/multi_customer_batch.py) | Multi-customer batch fan-out, per-recipient `METHOD` opt-in, cancellation, and terminal-state guards |
+| [`examples/multi_provider_automation.py`](examples/multi_provider_automation.py) | Scoped `(provider, object_id)` isolation, custom `TicketHandler`, `OUTAGE` fallback, and `OutOfBandVerifier` |
+| [`examples/signed_email_and_sanitization.py`](examples/signed_email_and_sanitization.py) | RFC 3156 OpenPGP signing/verification, tamper detection, and `METHOD` email sanitization |
+| [`examples/caldav_and_altrep_demo.py`](examples/caldav_and_altrep_demo.py) | Offline mock CalDAV server (`PROPFIND`, `PUT` + `ETag`, `REPORT`, `GET`, `DELETE`) and `ALTREP` SSRF protection |
+| [`examples/localization_and_lenient_parsing.py`](examples/localization_and_lenient_parsing.py) | Section 5.1 `LocalizationStrings`, `LANGUAGE` params, `VTIMEZONE`/`VALARM`, and lenient diagnostics |
+| [`examples/cli_walkthrough.sh`](examples/cli_walkthrough.sh) | End-to-end `maintnote` CLI walkthrough using [`examples/samples/`](examples/samples/) |
+
+---
+
 ## Documentation
 
 Full documentation is available in [`docs/`](docs/):

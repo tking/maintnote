@@ -1,0 +1,40 @@
+From: Legacy Carrier NOC <noc@legacy.example.net>
+To: Network Automation <automation@customer.example>
+Subject: [Maintenance] NYC POP optical switchover (WO-NYC-771)
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="maintnote-sample-boundary"
+
+--maintnote-sample-boundary
+Content-Type: text/plain; charset="utf-8"
+
+Dear Customer,
+
+Scheduled maintenance WO-NYC-771 will take place on 2026-11-10 from
+01:00 to 03:00 America/New_York (06:00 to 08:00 UTC).
+
+--maintnote-sample-boundary
+Content-Type: text/calendar; charset="utf-8"; method="PUBLISH"; name="maintenance.ics"
+Content-Disposition: attachment; filename="maintenance.ics"
+
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Legacy Carrier//Maintenance//EN
+METHOD:PUBLISH
+BEGIN:VEVENT
+UID:nyc-email-01@legacy.example.net
+SEQUENCE:0
+DTSTAMP:20261101T120000Z
+DTSTART:20261110T060000Z
+DTEND:20261110T080000Z
+SUMMARY:NYC POP optical switchover
+ORGANIZER;CN="Legacy Carrier NOC":mailto:noc@legacy.example.net
+X-MAINTNOTE-PROVIDER:legacy.example.net
+X-MAINTNOTE-ACCOUNT:ACC-NYC-01
+X-MAINTNOTE-MAINTENANCE-ID:WO-NYC-771
+X-MAINTNOTE-OBJECT-ID:nyc-core-01
+X-MAINTNOTE-IMPACT:OUTAGE
+X-MAINTNOTE-STATUS:CONFIRMED
+END:VEVENT
+END:VCALENDAR
+
+--maintnote-sample-boundary--
