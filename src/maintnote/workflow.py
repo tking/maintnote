@@ -230,7 +230,7 @@ class MaintenanceProvider:
             provider=self.provider,
             account=account,
             maintenance_id=maintenance_id,
-            objects=list(objects),
+            objects=objects,
             impact=impact,
             status=status,
             prodid=self.prodid,

@@ -16,7 +16,7 @@ format:
 	ruff format src tests
 
 typecheck:
-	MYPYPATH=$(PYTHONPATH) mypy src
+	MYPYPATH=$(PYTHONPATH) mypy src tests
 
 check: lint typecheck test
 

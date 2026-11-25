@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -343,7 +344,7 @@ class MaintenanceNotification:
         provider: str,
         account: str,
         maintenance_id: str,
-        objects: list[ServiceObject | str] | tuple[ServiceObject | str, ...],
+        objects: Sequence[ServiceObject | str],
         impact: Impact | ImpactValue | str,
         status: Status | StatusValue | str | None = Status.TENTATIVE,
         sequence: int = 0,
