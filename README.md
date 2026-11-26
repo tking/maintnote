@@ -1,8 +1,8 @@
 # maintnote
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](pyproject.toml)
-[![Typed: PEP 561](https://img.shields.io/badge/typing-strict-brightgreen.svg)](src/maintnote/py.typed)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/tking/maintnote/blob/main/LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://github.com/tking/maintnote/blob/main/pyproject.toml)
+[![Typed: PEP 561](https://img.shields.io/badge/typing-strict-brightgreen.svg)](https://github.com/tking/maintnote/blob/main/src/maintnote/py.typed)
 
 `maintnote` is a Python 3.10+ library and command-line tool (CLI) for network maintenance notifications.
 It implements IETF [**`draft-gunter-calext-maintenance-notifications-00`**](https://datatracker.ietf.org/doc/html/draft-gunter-calext-maintenance-notifications-00) (*Maintenance Notification Improvements Using iCalendar*).
@@ -55,19 +55,19 @@ It also lists one or more affected service objects, an impact level, and an opti
 
 ## Installation
 
-Install the package:
+Install `maintnote` from PyPI:
 
 ```bash
-pip install -e .
+pip install maintnote
 ```
 
-Install the development tools (`pytest`, `pytest-cov`, `ruff`, and `mypy`):
+For local development, install the package with test, lint, and type-check tools (`pytest`, `pytest-cov`, `ruff`, and `mypy`):
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-Install the documentation tools (`mkdocs` and `mkdocs-material`):
+To build the documentation locally, install the documentation tools (`mkdocs` and `mkdocs-material`):
 
 ```bash
 pip install -e ".[docs]"
@@ -205,31 +205,31 @@ maintnote extract-email examples/samples/legacy_provider.eml --strip-method --js
 
 ## Examples
 
-Python example scripts, sample `.ics` and `.eml` files, and a CLI walkthrough are in [`examples/`](examples/):
+Python example scripts, sample `.ics` and `.eml` files, and a CLI walkthrough are in [`examples/`](https://github.com/tking/maintnote/tree/main/examples):
 
 | Example | Purpose |
 | --- | --- |
-| [`examples/provider_lifecycle.py`](examples/provider_lifecycle.py) | Run the provider lifecycle from initial notification through completion |
-| [`examples/consumer_pipeline.py`](examples/consumer_pipeline.py) | Extract emails, track state in SQLite, and reject stale notifications |
-| [`examples/multi_customer_batch.py`](examples/multi_customer_batch.py) | Send one maintenance notification to more than one account with per-account `METHOD` settings and cancel the batch |
-| [`examples/multi_provider_automation.py`](examples/multi_provider_automation.py) | Isolate `(provider, object_id)` pairs, use a custom `TicketHandler`, test `OUTAGE` fallback, and run `OutOfBandVerifier` |
-| [`examples/signed_email_and_sanitization.py`](examples/signed_email_and_sanitization.py) | Sign and verify RFC 3156 OpenPGP emails, detect tampering, and remove `METHOD` from emails |
-| [`examples/caldav_and_altrep_demo.py`](examples/caldav_and_altrep_demo.py) | Run an offline mock CalDAV server (`PROPFIND`, `PUT` with `ETag`, `REPORT`, `GET`, `DELETE`) and test `ALTREP` SSRF checks |
-| [`examples/localization_and_lenient_parsing.py`](examples/localization_and_lenient_parsing.py) | Use `LocalizationStrings`, `LANGUAGE` parameters, `VTIMEZONE`, `VALARM`, and lenient diagnostics |
-| [`examples/cli_walkthrough.sh`](examples/cli_walkthrough.sh) | Run every `maintnote` CLI subcommand against the files in [`examples/samples/`](examples/samples/) |
+| [`examples/provider_lifecycle.py`](https://github.com/tking/maintnote/blob/main/examples/provider_lifecycle.py) | Run the provider lifecycle from initial notification through completion |
+| [`examples/consumer_pipeline.py`](https://github.com/tking/maintnote/blob/main/examples/consumer_pipeline.py) | Extract emails, track state in SQLite, and reject stale notifications |
+| [`examples/multi_customer_batch.py`](https://github.com/tking/maintnote/blob/main/examples/multi_customer_batch.py) | Send one maintenance notification to more than one account with per-account `METHOD` settings and cancel the batch |
+| [`examples/multi_provider_automation.py`](https://github.com/tking/maintnote/blob/main/examples/multi_provider_automation.py) | Isolate `(provider, object_id)` pairs, use a custom `TicketHandler`, test `OUTAGE` fallback, and run `OutOfBandVerifier` |
+| [`examples/signed_email_and_sanitization.py`](https://github.com/tking/maintnote/blob/main/examples/signed_email_and_sanitization.py) | Sign and verify RFC 3156 OpenPGP emails, detect tampering, and remove `METHOD` from emails |
+| [`examples/caldav_and_altrep_demo.py`](https://github.com/tking/maintnote/blob/main/examples/caldav_and_altrep_demo.py) | Run an offline mock CalDAV server (`PROPFIND`, `PUT` with `ETag`, `REPORT`, `GET`, `DELETE`) and test `ALTREP` SSRF checks |
+| [`examples/localization_and_lenient_parsing.py`](https://github.com/tking/maintnote/blob/main/examples/localization_and_lenient_parsing.py) | Use `LocalizationStrings`, `LANGUAGE` parameters, `VTIMEZONE`, `VALARM`, and lenient diagnostics |
+| [`examples/cli_walkthrough.sh`](https://github.com/tking/maintnote/blob/main/examples/cli_walkthrough.sh) | Run every `maintnote` CLI subcommand against the files in [`examples/samples/`](https://github.com/tking/maintnote/tree/main/examples/samples) |
 
 ---
 
 ## Documentation
 
-Read the full guides in [`docs/`](docs/):
+Read the full guides in [`docs/`](https://github.com/tking/maintnote/tree/main/docs):
 
-- [Overview](docs/index.md)
-- [Getting Started](docs/getting-started.md)
-- [Specification Compliance Matrix](docs/specification-compliance.md)
-- [Provider and Consumer Workflows](docs/workflows.md)
-- [Security and Transport](docs/security-and-transport.md)
-- [API Reference](docs/api-reference.md)
+- [Overview](https://github.com/tking/maintnote/blob/main/docs/index.md)
+- [Getting Started](https://github.com/tking/maintnote/blob/main/docs/getting-started.md)
+- [Specification Compliance Matrix](https://github.com/tking/maintnote/blob/main/docs/specification-compliance.md)
+- [Provider and Consumer Workflows](https://github.com/tking/maintnote/blob/main/docs/workflows.md)
+- [Security and Transport](https://github.com/tking/maintnote/blob/main/docs/security-and-transport.md)
+- [API Reference](https://github.com/tking/maintnote/blob/main/docs/api-reference.md)
 
 ---
 
@@ -261,11 +261,11 @@ To build the documentation in strict mode, run:
 make docs
 ```
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for the full Pull Request and coding rules.
+Read [CONTRIBUTING.md](https://github.com/tking/maintnote/blob/main/CONTRIBUTING.md) for the full Pull Request and coding rules.
 
 ---
 
 ## License
 
 This project uses the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)**.
-Read [LICENSE](LICENSE) for the full license text.
+Read [LICENSE](https://github.com/tking/maintnote/blob/main/LICENSE) for the full license text.

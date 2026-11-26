@@ -52,3 +52,23 @@ jobs:
         run: pip install -e ".[docs]"
       - name: Build documentation
         run: mkdocs build --strict
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build and validation tools
+        run: python -m pip install --upgrade build twine
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Validate distribution metadata
+        run: twine check --strict dist/*
+      - name: Smoke test built wheel
+        run: |
+          python -m venv /tmp/wheel-smoke
+          /tmp/wheel-smoke/bin/pip install dist/*.whl
+          /tmp/wheel-smoke/bin/python -c "import maintnote; print(maintnote.__version__)"
+          /tmp/wheel-smoke/bin/maintnote --help
