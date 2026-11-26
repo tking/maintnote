@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from email.message import EmailMessage
+from email.message import EmailMessage, Message
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
+from typing import Any
 
 import pytest
 
 from maintnote.email_utils import (
+    _slice_raw_signed_entity,
+    attach_notification,
     build_notification_email,
     extract_notifications_from_email,
     extract_pgp_signed_parts,
+    strip_method_from_email,
     strip_method_from_ical,
     verify_email_signature,
 )
-from maintnote.exceptions import VerificationError
+from maintnote.exceptions import ParseError, VerificationError
 from maintnote.models import Impact, MaintenanceNotification, Status
 from maintnote.parser import parse
 from maintnote.serializer import dumps
@@ -120,3 +124,70 @@ def test_rfc3156_openpgp_signature_verification() -> None:
     with pytest.raises(VerificationError, match="not signed"):
         verify_email_signature(unsigned, AcceptingVerifier(), require_signature=True)
     assert verify_email_signature(unsigned, AcceptingVerifier(), require_signature=False) is False
+
+
+def test_email_utils_fallback_and_error_branches() -> None:
+    notif = _sample_notification()
+
+    # attach_notification with include_method=False omits MIME method param
+    msg_no_method = EmailMessage()
+    msg_no_method.set_content("Body")
+    attach_notification(msg_no_method, notif, include_method=False)
+    cleaned_no_param = strip_method_from_email(msg_no_method)
+    assert len(extract_notifications_from_email(cleaned_no_param.as_string())) == 1
+
+    # Message with unencoded str payload (get_payload(decode=True) returns None)
+    raw_part = Message()
+    raw_part["Content-Type"] = "text/calendar; charset=utf-8"
+    raw_part.set_payload(dumps(notif, include_method=True))
+    cleaned_str_part = strip_method_from_email(raw_part)
+    extracted_str = extract_notifications_from_email(cleaned_str_part)
+    assert len(extracted_str) == 1
+    assert extracted_str[0].method is None
+
+    # Non-bytes, non-str payload in a text/calendar part is skipped safely
+    empty_cal = Message()
+    empty_cal["Content-Type"] = "text/calendar"
+    empty_cal.set_payload(None)
+    assert extract_notifications_from_email(empty_cal) == []
+    strip_method_from_email(empty_cal)
+
+    # extract_pgp_signed_parts accepts str input and rejects non-OpenPGP protocols
+    signed_non_pgp = MIMEMultipart(
+        "signed",
+        micalg="sha256",
+        protocol="application/pkcs7-signature",
+    )
+    assert extract_pgp_signed_parts(signed_non_pgp.as_string()) is None
+
+    # Malformed multipart/signed parts raise ParseError
+    bad_parts = Message()
+    bad_parts["Content-Type"] = 'multipart/signed; protocol="application/pgp-signature"'
+    bad_payload: list[Any] = ["not-a-message", "also-not-a-message"]
+    bad_parts.set_payload(bad_payload)
+    with pytest.raises(ParseError, match="valid MIME messages"):
+        extract_pgp_signed_parts(bad_parts)
+
+    # Signature part with unencoded str payload (get_payload(decode=True) is None)
+    sig_str_part = Message()
+    sig_str_part["Content-Type"] = "application/pgp-signature"
+    sig_str_part.set_payload(
+        "-----BEGIN PGP SIGNATURE-----\nSTR-SIG\n-----END PGP SIGNATURE-----\n"
+    )
+    inner_part = Message()
+    inner_part["Content-Type"] = "text/plain"
+    inner_part.set_payload("hello")
+    signed_str_sig = MIMEMultipart(
+        "signed",
+        micalg="pgp-sha256",
+        protocol="application/pgp-signature",
+    )
+    signed_str_sig.attach(inner_part)
+    signed_str_sig.attach(sig_str_part)
+    parsed_sig = extract_pgp_signed_parts(signed_str_sig)
+    assert parsed_sig is not None
+    assert b"STR-SIG" in parsed_sig.signature
+
+    # _slice_raw_signed_entity returns None when boundaries are missing or truncated
+    assert _slice_raw_signed_entity(b"no boundary here", "BOUND") is None
+    assert _slice_raw_signed_entity(b"--BOUND\r\nonly first boundary", "BOUND") is None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any
@@ -13,7 +14,12 @@ import pytest
 from maintnote.exceptions import TransportError
 from maintnote.models import Impact, MaintenanceNotification, ServiceObject, Status
 from maintnote.serializer import dumps
-from maintnote.transport import CalDAVClient, fetch_altrep_metadata
+from maintnote.transport import (
+    CalDAVClient,
+    _SafeRedirectHandler,
+    _default_tls_opener,
+    fetch_altrep_metadata,
+)
 
 
 class _MockResponse:
@@ -146,3 +152,98 @@ def test_caldav_fetch_publish_and_delete() -> None:
 
     client.delete_notification("caldav-uid-1.ics")
     assert opener.requests[2].get_method() == "DELETE"
+
+
+class _ErrorOpener(urllib.request.OpenerDirector):
+    def open(self, fullurl: Any, data: Any = None, timeout: Any = None) -> Any:
+        raise urllib.error.URLError("simulated network failure")
+
+
+def test_transport_error_paths_and_edge_cases() -> None:
+    # Public IP literal allowed when block_private_ips=True, custom headers forwarded,
+    # and malformed JSON with non-JSON Content-Type leaves data=None.
+    opener = _MockOpener(
+        [
+            _MockResponse(b"{not-valid-json", headers={"Content-Type": "text/plain"}),
+            _MockResponse(b"plain text", headers={"Content-Type": "text/plain"}),
+        ]
+    )
+    public_ip_obj = ServiceObject(object_id="ip-1", altrep="https://93.184.216.34/info")
+    res = fetch_altrep_metadata(
+        public_ip_obj,
+        headers={"X-Custom-Header": "maintnote-test"},
+        opener=opener,
+    )
+    assert res.data is None
+    assert opener.requests[0].get_header("X-custom-header") == "maintnote-test"
+
+    # block_private_ips=False skips private-IP checks
+    local_obj = ServiceObject(object_id="ip-2", altrep="https://127.0.0.1/info")
+    res2 = fetch_altrep_metadata(local_obj, block_private_ips=False, opener=opener)
+    assert res2.raw_body == b"plain text"
+
+    # _SafeRedirectHandler allows a valid HTTPS redirect to a public host
+    redirect_handler = _SafeRedirectHandler(allowed_schemes=("https",), block_private_ips=True)
+    orig_req = urllib.request.Request("https://example.org/old")
+    redirected = redirect_handler.redirect_request(
+        orig_req,
+        io.BytesIO(b""),
+        302,
+        "Found",
+        {},
+        "https://example.org/new",
+    )
+    assert redirected is not None
+    assert redirected.full_url == "https://example.org/new"
+
+    # _default_tls_opener constructs an OpenerDirector with TLS 1.2+
+    tls_opener = _default_tls_opener()
+    assert isinstance(tls_opener, urllib.request.OpenerDirector)
+
+    # CalDAVClient network and XML error handling
+    err_client = CalDAVClient("https://cal.example.com/maint/", opener=_ErrorOpener())
+    with pytest.raises(TransportError, match="CalDAV PROPFIND failed"):
+        err_client.discover_collection()
+    with pytest.raises(TransportError, match="CalDAV GET failed"):
+        err_client.get_notification("item.ics")
+    notif = MaintenanceNotification.create(
+        uid="caldav-err-1",
+        dtstart=datetime(2026, 12, 1, 2, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 12, 1, 4, 0, tzinfo=timezone.utc),
+        summary="Error path test",
+        organizer="noc@example.com",
+        provider="example.com",
+        account="ACC-1",
+        maintenance_id="WO-1",
+        objects=["ckt-1"],
+        impact=Impact.OUTAGE,
+    )
+    with pytest.raises(TransportError, match="CalDAV PUT failed"):
+        err_client.publish_notification(notif)
+
+    # Invalid XML from PROPFIND raises TransportError
+    bad_xml_client = CalDAVClient(
+        "https://cal.example.com/maint/",
+        opener=_MockOpener([_MockResponse(b"<broken-xml")]),
+    )
+    with pytest.raises(TransportError, match="Invalid CalDAV PROPFIND XML"):
+        bad_xml_client.discover_collection()
+
+    # REPORT with start-only, end-only, and empty calendar-data response element
+    empty_cal_xml = b"""<?xml version="1.0" encoding="utf-8"?>
+    <D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+      <D:response>
+        <D:href>/maint/empty.ics</D:href>
+        <D:propstat><D:prop><C:calendar-data>   </C:calendar-data></D:prop></D:propstat>
+      </D:response>
+    </D:multistatus>
+    """
+    report_opener = _MockOpener(
+        [
+            _MockResponse(empty_cal_xml),
+            _MockResponse(empty_cal_xml),
+        ]
+    )
+    report_client = CalDAVClient("https://cal.example.com/maint/", opener=report_opener)
+    assert report_client.fetch_events(start=datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc)) == []
+    assert report_client.fetch_events(end=datetime(2026, 12, 2, 0, 0, tzinfo=timezone.utc)) == []
