@@ -25,3 +25,4 @@ Before opening or updating a Pull Request, ensure all CI checks pass:
 - Maintain `mypy --strict` compliance across both `src/` and `tests/`.
 - Preserve RFC 5545 and `draft-gunter-calext-maintenance-notifications-00` compliance, citing relevant sections in docstrings and tests when changing specification behavior.
 - Add unit tests for every new feature, workflow transition, or bug fix.
+- Write and review user/contributor documentation (`README.md`, `CONTRIBUTING.md`, and `docs/*.md`) using the **ASD-STE100** standard for software developers, network engineers, and DevOps engineers. Follow the workspace skill at `.agents/skills/documentation-asd-ste100/SKILL.md` and run `python3 .agents/skills/documentation-asd-ste100/scripts/check_docs.py` before committing documentation changes.
