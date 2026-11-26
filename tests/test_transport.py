@@ -16,8 +16,8 @@ from maintnote.models import Impact, MaintenanceNotification, ServiceObject, Sta
 from maintnote.serializer import dumps
 from maintnote.transport import (
     CalDAVClient,
-    _SafeRedirectHandler,
     _default_tls_opener,
+    _SafeRedirectHandler,
     fetch_altrep_metadata,
 )
 
