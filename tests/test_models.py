@@ -123,3 +123,47 @@ def test_notification_create_helpers_and_to_dict() -> None:
     assert as_dict["provider"] == "example.com"
     assert as_dict["effective_impact"] == "OUTAGE"
     assert len(as_dict["objects"]) == 2
+
+
+def test_models_edge_cases_and_validation_errors() -> None:
+    # Impact.worst() with no arguments defaults conservatively to OUTAGE
+    assert Impact.worst() is Impact.OUTAGE
+
+    # ImpactValue and StatusValue merge parameters when coercing existing instances
+    base_impact = ImpactValue(Impact.DEGRADED.value, params={"X-A": ("1",)})
+    merged_impact = ImpactValue.from_impact(base_impact, params={"x-b": ("2",)})
+    assert merged_impact.params == {"X-A": ("1",), "X-B": ("2",)}
+    assert str(merged_impact) == "DEGRADED"
+
+    base_status = StatusValue(Status.CONFIRMED.value, params={"X-A": ("1",)})
+    merged_status = StatusValue.from_status(base_status, params={"x-b": ("2",)})
+    assert merged_status.params == {"X-A": ("1",), "X-B": ("2",)}
+
+    with pytest.raises(ValidationError):
+        StatusValue("BAD VALUE WITH SPACES")
+
+    # Organizer validation and non-mailto URI handling
+    with pytest.raises(ValidationError):
+        Organizer("   ")
+    urn_org = Organizer("urn:uuid:12345")
+    assert urn_org.email == "urn:uuid:12345"
+
+    # ServiceObject rejects blank object_id
+    with pytest.raises(ValidationError):
+        ServiceObject("   ")
+
+    # MaintenanceNotification.with_updates coerces string organizer
+    notif = MaintenanceNotification.create(
+        uid="maint-002@example.com",
+        dtstart=datetime(2026, 6, 1, 2, 0, tzinfo=timezone.utc),
+        dtend=datetime(2026, 6, 1, 3, 0, tzinfo=timezone.utc),
+        summary="Switch firmware update",
+        organizer="noc@example.com",
+        provider="example.com",
+        account="acct-42",
+        maintenance_id="WO-1000",
+        objects=["ckt-1"],
+        impact=Impact.NO_IMPACT,
+    )
+    updated = notif.with_updates(organizer="ops2@example.com")
+    assert updated.organizer.address == "mailto:ops2@example.com"
