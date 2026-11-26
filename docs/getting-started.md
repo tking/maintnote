@@ -9,13 +9,13 @@ This guide explains how to install `maintnote`, parse and create `.ics` maintena
 
 ## Install `maintnote`
 
-Run `pip` from the repository root:
+Install `maintnote` from PyPI:
 
 ```bash
-pip install -e .
+pip install maintnote
 ```
 
-To install the test, lint, and documentation tools also, run:
+From a cloned repository, install `maintnote` with the test, lint, and documentation tools:
 
 ```bash
 pip install -e ".[dev,docs]"

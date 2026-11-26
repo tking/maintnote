@@ -1,5 +1,6 @@
 # maintnote
 
+[![PyPI](https://img.shields.io/pypi/v/maintnote.svg)](https://pypi.org/project/maintnote/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://github.com/tking/maintnote/blob/main/LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://github.com/tking/maintnote/blob/main/pyproject.toml)
 [![Typed: PEP 561](https://img.shields.io/badge/typing-strict-brightgreen.svg)](https://github.com/tking/maintnote/blob/main/src/maintnote/py.typed)
@@ -61,13 +62,13 @@ Install `maintnote` from PyPI:
 pip install maintnote
 ```
 
-For local development, install the package with test, lint, and type-check tools (`pytest`, `pytest-cov`, `ruff`, and `mypy`):
+From a cloned repository, install the package with test, lint, and type-check tools (`pytest`, `pytest-cov`, `ruff`, and `mypy`):
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-To build the documentation locally, install the documentation tools (`mkdocs` and `mkdocs-material`):
+From a cloned repository, install the documentation tools (`mkdocs` and `mkdocs-material`):
 
 ```bash
 pip install -e ".[docs]"
