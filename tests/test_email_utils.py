@@ -148,7 +148,6 @@ def test_email_utils_fallback_and_error_branches() -> None:
     # Non-bytes, non-str payload in a text/calendar part is skipped safely
     empty_cal = Message()
     empty_cal["Content-Type"] = "text/calendar"
-    empty_cal.set_payload(None)
     assert extract_notifications_from_email(empty_cal) == []
     strip_method_from_email(empty_cal)
 
