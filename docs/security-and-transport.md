@@ -1,17 +1,20 @@
-# Security & Transport
+# Security and Transport
 
-Section 2.3.1, Section 2.5.4, and Section 5.2 of the Internet-Draft discuss calendar interaction safety, external `ALTREP` metadata, email authentication with OpenPGP, CalDAV over TLS, and out-of-band verification.
+Maintenance notifications can trigger automated actions such as BGP session drains, incident tickets, or deployment freezes.
+Because of this risk, Sections 2.3.1, 2.5.4, and 5.2 define strict calendar, email, metadata, and transport controls.
 
-## 1. Preventing Unwanted Calendar Auto-Population (Section 2.3.1)
+## 1. Prevent Automatic Calendar Entries (Section 2.3.1)
 
-By default, `maintnote` omits the `METHOD` calendar property when serializing notifications.
-If an upstream provider sends `METHOD:PUBLISH` or `METHOD:REQUEST`, you can sanitize either raw `.ics` payloads or complete `.eml` messages (removing both `METHOD:` inside the `.ics` attachment and the `method=...` MIME `Content-Type` header parameter):
+Many email clients automatically add `.ics` attachments to personal calendars when the `METHOD` property is present.
+To prevent unwanted calendar entries, `maintnote` omits `METHOD` by default when it serializes a notification.
+
+If an upstream provider sends `METHOD:PUBLISH` or `METHOD:REQUEST`, remove `METHOD` before you forward the notification to users:
 
 ```python
 from maintnote import (
-    strip_method_from_ical,
-    strip_method_from_email,
     extract_notifications_from_email,
+    strip_method_from_email,
+    strip_method_from_ical,
 )
 
 safe_ical = strip_method_from_ical(raw_ical)
@@ -19,9 +22,18 @@ safe_email = strip_method_from_email(raw_email_bytes)
 notifications = extract_notifications_from_email(raw_email_bytes, strip_method=True)
 ```
 
-## 2. Email Authentication with OpenPGP (RFC 3156, Section 5.2)
+`strip_method_from_email()` removes both the `METHOD:` line in the `.ics` attachment and the `method=...` parameter in the MIME `Content-Type` header.
 
-`maintnote.email_utils` supports both **provider-side signing** (`OpenPGPSigner` + `sign_notification_email`) and **consumer-side raw-byte verification** (`OpenPGPVerifier` + `verify_email_signature`). When raw `bytes` or `str` input is passed to `extract_pgp_signed_parts` / `verify_email_signature`, the signed entity is sliced verbatim between the outer `multipart/signed` MIME boundaries (canonicalized to CRLF per RFC 3156 §5) so re-serialization cannot break cryptographic signatures:
+## 2. Sign and Verify Emails with OpenPGP (RFC 3156, Section 5.2)
+
+Email headers alone do not prove that a notification came from a trusted provider.
+`maintnote.email_utils` supports RFC 3156 `multipart/signed` OpenPGP signatures for both providers and consumers.
+
+!!! warning
+    Pass raw `bytes` or `str` input to `extract_notifications_from_email()` or `verify_email_signature()`.
+    If you parse and serialize the email before verification, whitespace or header changes can break the OpenPGP signature.
+
+`maintnote` extracts the signed entity directly from the raw MIME boundaries and sets line endings to CRLF (RFC 3156 Section 5).
 
 ```python
 from maintnote import (
@@ -30,11 +42,15 @@ from maintnote import (
     sign_notification_email,
 )
 
-# Provider side: wrap outgoing email in RFC 3156 multipart/signed
-eml = build_notification_email(notification, sender="noc@example.com", recipient="ops@client.example")
+# Provider side: wrap the email in an RFC 3156 multipart/signed envelope
+eml = build_notification_email(
+    notification,
+    sender="noc@example.com",
+    recipient="ops@client.example",
+)
 signed_eml = sign_notification_email(eml, signer=my_pgp_signer, micalg="pgp-sha256")
 
-# Consumer side: verify raw bytes before parsing attachments
+# Consumer side: verify the raw bytes before you parse any attachments
 notifications = extract_notifications_from_email(
     signed_eml.as_bytes(),
     pgp_verifier=my_pgp_verifier,
@@ -42,9 +58,22 @@ notifications = extract_notifications_from_email(
 )
 ```
 
-## 3. Pulling and Publishing via CalDAV over TLS (RFC 4791, Section 5.2)
+Implement the `OpenPGPSigner` and `OpenPGPVerifier` protocols to connect your GPG binary or cryptographic library.
+To see a complete offline example with tamper detection, run `examples/signed_email_and_sanitization.py`.
 
-`CalDAVClient` enforces HTTPS with TLS 1.2+ by default and supports `PROPFIND` collection discovery, `REPORT` queries with time-range & `X-MAINTNOTE-*` `<C:prop-filter>`s, single-resource `GET`, and `ETag` (`If-Match` / `If-None-Match`) concurrency control on `PUT`/`DELETE`:
+## 3. Sync Notifications with CalDAV over TLS (RFC 4791, Section 5.2)
+
+Providers can publish notifications to an authenticated CalDAV calendar over HTTPS instead of email.
+Consumers can then get those notifications from the CalDAV server.
+
+`CalDAVClient` enforces `https://` with TLS 1.2 or newer by default.
+It supports these CalDAV operations:
+
+- **Discover a collection (`PROPFIND`):** Read the collection name (`displayname`) and `CTag`.
+- **Query events (`REPORT`):** Filter by time range and `X-MAINTNOTE-*` `prop-filter` rules.
+- **Get one event (`GET`):** Download one `.ics` resource and its `ETag`.
+- **Publish or update (`PUT`):** Protect concurrent writes with `If-Match` or `If-None-Match`.
+- **Delete an event (`DELETE`):** Remove a resource, with optional `If-Match` validation.
 
 ```python
 from datetime import datetime, timezone
@@ -55,10 +84,10 @@ client = CalDAVClient(
     bearer_token="...",
 )
 
-# Discover collection metadata & CTag
+# Discover the collection name and CTag
 info = client.discover_collection()
 
-# Pull events with ETag & server-side X-MAINTNOTE-* filtering
+# Get confirmed events for one provider in a time window
 events = client.fetch_events(
     start=datetime(2026, 11, 1, 0, 0, tzinfo=timezone.utc),
     end=datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc),
@@ -66,14 +95,28 @@ events = client.fetch_events(
     status=Status.CONFIRMED,
 )
 
-# Fetch single resource or publish with optimistic concurrency
+# Get one event and update it with ETag concurrency checks
 single = client.get_notification("maint-001.ics")
 client.publish_notification(single.notifications[0], if_match=single.etag)
 ```
 
-## 4. Hardened External `ALTREP` Metadata Retrieval (Section 2.5.4 & RFC 7159)
+To see a complete offline example with a local mock CalDAV server, run `examples/caldav_and_altrep_demo.py`.
 
-`fetch_altrep_metadata()` enforces HTTPS by default, re-validates every HTTP redirect hop against scheme downgrades and private/loopback IP addresses (`block_private_ips=True`), and caps response size (`max_bytes=5 MiB`):
+## 4. Get External `ALTREP` Metadata Safely (Section 2.5.4)
+
+A `ServiceObject` can contain an `ALTREP` URI that points to structured JSON data, such as a PeeringDB record or provider circuit page.
+
+!!! warning
+    Never get an untrusted `ALTREP` URL without scheme, redirect, and IP address checks.
+    A malicious `ALTREP` URL can reach internal network services (SSRF) or fill memory with a large response.
+
+`fetch_altrep_metadata()` applies these protections by default:
+
+- Allows only `https` URIs (`allowed_schemes=("https",)`).
+- Blocks loopback, private, link-local, multicast, and reserved IP addresses (`block_private_ips=True`).
+- Checks scheme and IP rules again on each HTTP redirect hop.
+- Limits response size to 5 MiB (`max_bytes=5 * 1024 * 1024`).
+- Decodes RFC 7159 JSON responses into `AltrepResource.data`.
 
 ```python
 from maintnote import fetch_altrep_metadata
@@ -84,6 +127,10 @@ for obj in notification.objects:
         print(resource.data)
 ```
 
-## 5. Out-of-Band Verification (Section 5.2)
+## 5. Run Out-of-Band Verification (Section 5.2)
 
-Attach an `OutOfBandVerifier` to `MaintenanceConsumer` to verify notifications against an authoritative portal or API before executing automated actions.
+Attach an `OutOfBandVerifier` to `MaintenanceConsumer` before your consumer opens tickets or changes routing state.
+The verifier checks each received notification against a trusted source, such as a provider API or allowlist.
+If `verify()` returns `False`, `MaintenanceConsumer.process()` raises `VerificationError` and makes no changes to the state store or ticket handler.
+
+To see a working example, run `examples/multi_provider_automation.py`.
