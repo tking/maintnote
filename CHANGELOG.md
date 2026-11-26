@@ -5,6 +5,21 @@ All notable changes to `maintnote` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-26
+
+### Added
+- Runnable Python examples (`examples/multi_customer_batch.py`, `examples/multi_provider_automation.py`, `examples/signed_email_and_sanitization.py`, `examples/caldav_and_altrep_demo.py`, `examples/localization_and_lenient_parsing.py`), sample `.ics` and `.eml` fixtures (`examples/samples/`), an end-to-end CLI walkthrough (`examples/cli_walkthrough.sh`), and automated smoke tests.
+- GitHub Actions PyPI Trusted Publishing workflow (`.github/workflows/publish.yml`) with release-tag version verification, `twine check --strict`, and clean-venv wheel smoke testing.
+- CI `package` job in `.github/workflows/ci.yml` to build and validate sdist and wheel archives on every push and Pull Request.
+- Repository agent guidelines (`AGENTS.md`) and `documentation-asd-ste100` workspace skill with automated documentation checker (`check_docs.py`).
+
+### Changed
+- Rewrote `README.md`, `CONTRIBUTING.md`, and all `docs/*.md` guides to follow ASD-STE100 (Simplified Technical English) for software developers, network engineers, and DevOps engineers.
+- Updated `pyproject.toml` and `README.md` metadata for PyPI publishing (author email, Changelog URL, absolute GitHub links, and `pip install maintnote`).
+
+### Fixed
+- Accepted any `Sequence[ServiceObject | str]` for `objects` in `MaintenanceNotification.create()`.
+
 ## [0.1.0] - 2026-11-24
 
 ### Added
