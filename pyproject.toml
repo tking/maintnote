@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maintnote"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python library implementing IETF draft-gunter-calext-maintenance-notifications-00 for machine-parseable iCalendar network maintenance notifications."
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
